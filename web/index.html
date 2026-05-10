@@ -967,6 +967,15 @@
                 </div>
                 <div class="form-group"><label>API Key</label><div style="display:flex;gap:8px;align-items:stretch"><input type="text" id="apiKeyInput" style="flex:1"
                         data-i18n-placeholder="settings.apiKeyPlaceholder"><button class="btn btn-sm btn-secondary" onclick="generateApiKey()" data-i18n="settings.generateApiKey"></button></div></div>
+                <div class="form-group">
+                    <label style="display:flex;align-items:center;gap:10px">
+                        <label class="switch"><input type="checkbox" id="restrictProAccountsAtLimit"><span
+                                class="slider"></span></label>
+                        <span data-i18n="settings.restrictProAccountsAtLimit"></span>
+                    </label>
+                    <small style="color:#64748b;font-size:12px;margin-top:4px;display:block"
+                        data-i18n="settings.restrictProAccountsAtLimitHint"></small>
+                </div>
                 <button class="btn btn-primary" onclick="saveSettings()" data-i18n="common.save"></button>
             </div>
             <div class="card">
@@ -1123,6 +1132,8 @@
                 'settings.enableApiKey': '启用 API Key 验证',
                 'settings.apiKeyPlaceholder': '留空则不验证',
                 'settings.generateApiKey': '随机生成',
+                'settings.restrictProAccountsAtLimit': 'Pro 账号达到限额后限制使用',
+                'settings.restrictProAccountsAtLimitHint': '开启后，Pro/Pro+ 账号主配额用尽时不会继续分配请求；关闭后仍会尝试使用。',
                 'settings.thinkingSettings': 'Thinking 模式设置',
                 'settings.thinkingSuffix': '触发后缀',
                 'settings.thinkingSuffixHint': '模型名称加此后缀即启用思考模式，如 claude-sonnet-4.5-thinking',
@@ -1329,6 +1340,8 @@
                 'settings.enableApiKey': 'Enable API Key Verification',
                 'settings.apiKeyPlaceholder': 'Leave empty to disable',
                 'settings.generateApiKey': 'Generate',
+                'settings.restrictProAccountsAtLimit': 'Limit Pro accounts after quota is reached',
+                'settings.restrictProAccountsAtLimitHint': 'When enabled, Pro/Pro+ accounts whose main quota is exhausted are skipped; when disabled, requests may still use them.',
                 'settings.thinkingSettings': 'Thinking Mode Settings',
                 'settings.thinkingSuffix': 'Trigger Suffix',
                 'settings.thinkingSuffixHint': 'Add this suffix to model name to enable thinking mode, e.g. claude-sonnet-4.5-thinking',
@@ -1989,6 +2002,7 @@
             const d = await res.json();
             document.getElementById('requireApiKey').checked = d.requireApiKey;
             document.getElementById('apiKeyInput').value = d.apiKey || '';
+            document.getElementById('restrictProAccountsAtLimit').checked = d.restrictProAccountsAtLimit !== false;
             loadThinkingConfig();
             loadEndpointConfig();
         }
@@ -2028,13 +2042,14 @@
         }
         async function saveSettings() {
             const requireApiKey = document.getElementById('requireApiKey').checked;
+            const restrictProAccountsAtLimit = document.getElementById('restrictProAccountsAtLimit').checked;
             const apiKeyInput = document.getElementById('apiKeyInput');
             if (requireApiKey && !apiKeyInput.value.trim()) {
                 generateApiKey();
             }
             await fetch('/admin/api/settings', {
                 method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Admin-Password': password },
-                body: JSON.stringify({ requireApiKey, apiKey: apiKeyInput.value })
+                body: JSON.stringify({ requireApiKey, apiKey: apiKeyInput.value, restrictProAccountsAtLimit })
             });
             alert(t('detail.saved'));
         }

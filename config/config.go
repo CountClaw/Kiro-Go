@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 )
 
@@ -90,15 +91,16 @@ type Account struct {
 // Config represents the global application configuration.
 type Config struct {
 	// Server settings
-	Password      string    `json:"password"`         // Admin panel password
-	Port          int       `json:"port"`             // HTTP server port (default: 8080)
-	Host          string    `json:"host"`             // HTTP server bind address (default: 0.0.0.0)
-	ApiKey        string    `json:"apiKey,omitempty"` // API key for client authentication
-	RequireApiKey bool      `json:"requireApiKey"`    // Whether to enforce API key validation
-	KiroVersion   string    `json:"kiroVersion,omitempty"`
-	SystemVersion string    `json:"systemVersion,omitempty"`
-	NodeVersion   string    `json:"nodeVersion,omitempty"`
-	Accounts      []Account `json:"accounts"` // Registered Kiro accounts
+	Password                   string    `json:"password"`                   // Admin panel password
+	Port                       int       `json:"port"`                       // HTTP server port (default: 8080)
+	Host                       string    `json:"host"`                       // HTTP server bind address (default: 0.0.0.0)
+	ApiKey                     string    `json:"apiKey,omitempty"`           // API key for client authentication
+	RequireApiKey              bool      `json:"requireApiKey"`              // Whether to enforce API key validation
+	RestrictProAccountsAtLimit bool      `json:"restrictProAccountsAtLimit"` // Whether to skip Pro accounts after quota is exhausted
+	KiroVersion                string    `json:"kiroVersion,omitempty"`
+	SystemVersion              string    `json:"systemVersion,omitempty"`
+	NodeVersion                string    `json:"nodeVersion,omitempty"`
+	Accounts                   []Account `json:"accounts"` // Registered Kiro accounts
 
 	// Thinking mode configuration for extended reasoning output
 	ThinkingSuffix       string `json:"thinkingSuffix,omitempty"`       // Model suffix to trigger thinking mode (default: "-thinking")
@@ -162,11 +164,12 @@ func Load() error {
 			// Create default configuration.
 			// Binds to 0.0.0.0 by default for Docker/container compatibility.
 			cfg = &Config{
-				Password:      "changeme",
-				Port:          8080,
-				Host:          "0.0.0.0",
-				RequireApiKey: false,
-				Accounts:      []Account{},
+				Password:                   "changeme",
+				Port:                       8080,
+				Host:                       "0.0.0.0",
+				RequireApiKey:              false,
+				RestrictProAccountsAtLimit: true,
+				Accounts:                   []Account{},
 			}
 			return Save()
 		}
@@ -177,8 +180,27 @@ func Load() error {
 	if err := json.Unmarshal(data, &c); err != nil {
 		return err
 	}
+	applyConfigDefaults(&c, data)
 	cfg = &c
 	return nil
+}
+
+func applyConfigDefaults(c *Config, data []byte) {
+	if !jsonFieldExists(data, "restrictProAccountsAtLimit") {
+		c.RestrictProAccountsAtLimit = true
+	}
+}
+
+func jsonFieldExists(data []byte, field string) bool {
+	if len(data) == 0 {
+		return false
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return false
+	}
+	_, ok := raw[field]
+	return ok
 }
 
 // Save persists the current configuration to the JSON file.
@@ -308,15 +330,37 @@ func IsApiKeyRequired() bool {
 	return cfg.RequireApiKey
 }
 
-func UpdateSettings(apiKey string, requireApiKey bool, password string) error {
+func IsRestrictProAccountsAtLimit() bool {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	return cfg.RestrictProAccountsAtLimit
+}
+
+func UpdateSettings(apiKey string, requireApiKey bool, password string, restrictProAccountsAtLimit bool) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
 	cfg.ApiKey = apiKey
 	cfg.RequireApiKey = requireApiKey
+	cfg.RestrictProAccountsAtLimit = restrictProAccountsAtLimit
 	if password != "" {
 		cfg.Password = password
 	}
 	return Save()
+}
+
+func ShouldRestrictAccountAtLimit(account Account) bool {
+	if account.UsageLimit <= 0 || account.UsageCurrent < account.UsageLimit {
+		return false
+	}
+	if IsProSubscription(account.SubscriptionType) {
+		return IsRestrictProAccountsAtLimit()
+	}
+	return true
+}
+
+func IsProSubscription(subscriptionType string) bool {
+	upper := strings.ToUpper(subscriptionType)
+	return strings.Contains(upper, "PRO")
 }
 
 func UpdateStats(totalReq, successReq, failedReq, totalTokens int, totalCredits float64) error {

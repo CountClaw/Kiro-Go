@@ -2399,18 +2399,20 @@ func (h *Handler) apiGetStatus(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) apiGetSettings(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"apiKey":        config.GetApiKey(),
-		"requireApiKey": config.IsApiKeyRequired(),
-		"port":          config.GetPort(),
-		"host":          config.GetHost(),
+		"apiKey":                     config.GetApiKey(),
+		"requireApiKey":              config.IsApiKeyRequired(),
+		"restrictProAccountsAtLimit": config.IsRestrictProAccountsAtLimit(),
+		"port":                       config.GetPort(),
+		"host":                       config.GetHost(),
 	})
 }
 
 func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ApiKey        string `json:"apiKey"`
-		RequireApiKey bool   `json:"requireApiKey"`
-		Password      string `json:"password"`
+		ApiKey                     *string `json:"apiKey"`
+		RequireApiKey              *bool   `json:"requireApiKey"`
+		RestrictProAccountsAtLimit *bool   `json:"restrictProAccountsAtLimit"`
+		Password                   string  `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
@@ -2418,7 +2420,20 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := config.UpdateSettings(req.ApiKey, req.RequireApiKey, req.Password); err != nil {
+	apiKey := config.GetApiKey()
+	if req.ApiKey != nil {
+		apiKey = *req.ApiKey
+	}
+	requireApiKey := config.IsApiKeyRequired()
+	if req.RequireApiKey != nil {
+		requireApiKey = *req.RequireApiKey
+	}
+	restrictProAccountsAtLimit := config.IsRestrictProAccountsAtLimit()
+	if req.RestrictProAccountsAtLimit != nil {
+		restrictProAccountsAtLimit = *req.RestrictProAccountsAtLimit
+	}
+
+	if err := config.UpdateSettings(apiKey, requireApiKey, req.Password, restrictProAccountsAtLimit); err != nil {
 		w.WriteHeader(500)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return

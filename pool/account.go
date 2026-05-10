@@ -88,8 +88,8 @@ func (p *AccountPool) GetNext() *config.Account {
 			continue
 		}
 
-		// 跳过额度已用尽的账号（适用于所有订阅类型）
-		if acc.UsageLimit > 0 && acc.UsageCurrent >= acc.UsageLimit {
+		// 跳过达到限额且需要限制的账号；Pro 账号是否限制由设置页开关控制。
+		if config.ShouldRestrictAccountAtLimit(*acc) {
 			seen[acc.ID] = true
 			continue
 		}
@@ -102,8 +102,8 @@ func (p *AccountPool) GetNext() *config.Account {
 	var earliest time.Time
 	for i := range p.accounts {
 		acc := &p.accounts[i]
-		// 额度用尽的账号不作为 fallback
-		if acc.UsageLimit > 0 && acc.UsageCurrent >= acc.UsageLimit {
+		// 达到限额且需要限制的账号不作为 fallback。
+		if config.ShouldRestrictAccountAtLimit(*acc) {
 			continue
 		}
 		if cooldown, ok := p.cooldowns[acc.ID]; ok {
@@ -185,6 +185,9 @@ func (p *AccountPool) AvailableCount() int {
 	count := 0
 	for _, acc := range p.accounts {
 		if cooldown, ok := p.cooldowns[acc.ID]; ok && now.Before(cooldown) {
+			continue
+		}
+		if config.ShouldRestrictAccountAtLimit(acc) {
 			continue
 		}
 		count++
