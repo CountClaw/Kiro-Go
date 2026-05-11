@@ -431,6 +431,122 @@
             flex: 1;
         }
 
+        .logs-toolbar {
+            display: grid;
+            grid-template-columns: 130px minmax(180px, 1fr) 110px auto auto;
+            gap: 8px;
+            align-items: center;
+            margin-bottom: 14px;
+        }
+
+        .logs-summary {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+        }
+
+        .log-chip {
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 999px;
+            padding: 6px 10px;
+            color: #475569;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .log-console {
+            display: grid;
+            gap: 8px;
+            max-height: 620px;
+            overflow-y: auto;
+            padding-right: 2px;
+        }
+
+        .log-row {
+            border: 1px solid #e2e8f0;
+            background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+            border-radius: 10px;
+            padding: 12px;
+        }
+
+        .log-row.warn {
+            border-color: #fde68a;
+            background: #fffbeb;
+        }
+
+        .log-row.error {
+            border-color: #fecaca;
+            background: #fff1f2;
+        }
+
+        .log-head {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-bottom: 8px;
+        }
+
+        .log-badge {
+            border-radius: 999px;
+            padding: 3px 8px;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+
+        .log-badge.info {
+            background: #e0f2fe;
+            color: #0369a1;
+        }
+
+        .log-badge.warn {
+            background: #fef3c7;
+            color: #b45309;
+        }
+
+        .log-badge.error {
+            background: #fee2e2;
+            color: #b91c1c;
+        }
+
+        .log-status {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 12px;
+            color: #334155;
+            background: #f1f5f9;
+            border-radius: 6px;
+            padding: 3px 7px;
+        }
+
+        .log-message {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 12px;
+            line-height: 1.55;
+            color: #1e293b;
+            word-break: break-word;
+        }
+
+        .log-meta {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 8px;
+            color: #64748b;
+            font-size: 11px;
+        }
+
+        .log-empty {
+            padding: 34px 16px;
+            text-align: center;
+            border: 1px dashed #cbd5e1;
+            border-radius: 12px;
+            color: #64748b;
+            background: #f8fafc;
+        }
+
         .header {
             display: flex;
             align-items: center;
@@ -788,6 +904,10 @@
                 gap: 2px;
             }
 
+            .logs-toolbar {
+                grid-template-columns: 1fr;
+            }
+
             .tab {
                 padding: 10px 12px;
                 font-size: 13px;
@@ -915,6 +1035,7 @@
             <div class="tab active" data-tab="accounts" data-i18n="tabs.accounts"></div>
             <div class="tab" data-tab="settings" data-i18n="tabs.settings"></div>
             <div class="tab" data-tab="api" data-i18n="tabs.api"></div>
+            <div class="tab" data-tab="logs" data-i18n="tabs.logs"></div>
         </div>
         <div id="tabAccounts" class="tab-content">
             <div class="card">
@@ -1055,6 +1176,44 @@
                 <p style="font-size:12px;color:#64748b;margin-top:4px" data-i18n="api.statsHint"></p>
             </div>
         </div>
+        <div id="tabLogs" class="tab-content hidden">
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title" data-i18n="logs.title"></span>
+                    <div class="card-actions">
+                        <label style="display:flex;align-items:center;gap:8px;color:#64748b;font-size:13px;margin:0">
+                            <input type="checkbox" id="logsAutoRefresh" onchange="toggleLogsAutoRefresh()" style="width:16px;height:16px">
+                            <span data-i18n="logs.autoRefresh"></span>
+                        </label>
+                        <button class="btn btn-sm btn-secondary" onclick="loadLogs()" data-i18n="logs.refresh"></button>
+                        <button class="btn btn-sm btn-danger" onclick="clearLogs()" data-i18n="logs.clear"></button>
+                    </div>
+                </div>
+                <div class="logs-toolbar">
+                    <select id="logsLevelFilter" onchange="loadLogs()">
+                        <option value="all" data-i18n="logs.levelAll"></option>
+                        <option value="info" data-i18n="logs.levelInfo"></option>
+                        <option value="warn" data-i18n="logs.levelWarn"></option>
+                        <option value="error" data-i18n="logs.levelError"></option>
+                    </select>
+                    <input type="text" id="logsSearch" oninput="debouncedLoadLogs()" data-i18n-placeholder="logs.search">
+                    <select id="logsLimit" onchange="loadLogs()">
+                        <option value="50">50</option>
+                        <option value="100" selected>100</option>
+                        <option value="200">200</option>
+                        <option value="500">500</option>
+                    </select>
+                    <span class="log-chip" id="logsTotal">0</span>
+                    <span class="log-chip" id="logsLastUpdate">-</span>
+                </div>
+                <div class="logs-summary">
+                    <span class="log-chip" id="logsWarnCount">Warn 0</span>
+                    <span class="log-chip" id="logsErrorCount">Error 0</span>
+                    <span class="log-chip" id="logs404Count">404 0</span>
+                </div>
+                <div id="logsList" class="log-console"></div>
+            </div>
+        </div>
     </div>
     <div id="addModal" class="modal">
         <div class="modal-content">
@@ -1101,6 +1260,7 @@
                 'tabs.accounts': '账号',
                 'tabs.settings': '设置',
                 'tabs.api': 'API',
+                'tabs.logs': '日志',
                 'accounts.title': '账号列表',
                 'accounts.add': '添加账号',
                 'accounts.empty': '暂无账号',
@@ -1167,6 +1327,23 @@
                 'api.modelList': '模型列表',
                 'api.stats': '统计数据',
                 'api.statsHint': '需要在请求头中携带 API Key 鉴权（Authorization: Bearer sk-xxx），未启用 API Key 验证时无需鉴权',
+                'logs.title': '请求日志',
+                'logs.autoRefresh': '自动刷新',
+                'logs.refresh': '刷新',
+                'logs.clear': '清空',
+                'logs.confirmClear': '确定清空请求日志？',
+                'logs.levelAll': '全部级别',
+                'logs.levelInfo': '正常',
+                'logs.levelWarn': '警告',
+                'logs.levelError': '错误',
+                'logs.search': '搜索路径、状态、错误信息...',
+                'logs.empty': '暂无日志。发起一次 API 请求后，这里会显示状态码、路径、耗时和错误摘要。',
+                'logs.total': '总计 {0}，显示 {1}',
+                'logs.lastUpdate': '更新 {0}',
+                'logs.warnCount': '警告 {0}',
+                'logs.errorCount': '错误 {0}',
+                'logs.notFoundCount': '404 {0}',
+                'logs.loadFailed': '日志加载失败',
                 'detail.title': '账号详情',
                 'detail.basicInfo': '基本信息',
                 'detail.email': '邮箱',
@@ -1315,6 +1492,7 @@
                 'tabs.accounts': 'Accounts',
                 'tabs.settings': 'Settings',
                 'tabs.api': 'API',
+                'tabs.logs': 'Logs',
                 'accounts.title': 'Account List',
                 'accounts.add': 'Add Account',
                 'accounts.empty': 'No accounts',
@@ -1375,6 +1553,23 @@
                 'api.modelList': 'Model List',
                 'api.stats': 'Statistics',
                 'api.statsHint': 'Requires API Key in header (Authorization: Bearer sk-xxx). No auth needed if API Key verification is disabled.',
+                'logs.title': 'Request Logs',
+                'logs.autoRefresh': 'Auto refresh',
+                'logs.refresh': 'Refresh',
+                'logs.clear': 'Clear',
+                'logs.confirmClear': 'Clear request logs?',
+                'logs.levelAll': 'All levels',
+                'logs.levelInfo': 'Info',
+                'logs.levelWarn': 'Warn',
+                'logs.levelError': 'Error',
+                'logs.search': 'Search path, status, or error...',
+                'logs.empty': 'No logs yet. Send an API request to see status, path, latency, and error summaries here.',
+                'logs.total': 'Total {0}, showing {1}',
+                'logs.lastUpdate': 'Updated {0}',
+                'logs.warnCount': 'Warn {0}',
+                'logs.errorCount': 'Error {0}',
+                'logs.notFoundCount': '404 {0}',
+                'logs.loadFailed': 'Failed to load logs',
                 'detail.title': 'Account Details',
                 'detail.basicInfo': 'Basic Info',
                 'detail.email': 'Email',
@@ -1518,6 +1713,7 @@
             updateLangButtons();
             applyTranslations();
             renderAccounts();
+            renderLogs();
         }
         function updateLangButtons() {
             document.querySelectorAll('.lang-btn').forEach(btn => {
@@ -1539,6 +1735,9 @@
         let selectedAccounts = new Set();
         let filterKeyword = '';
         let filterStatus = 'all';
+        let logsData = [];
+        let logsTotalCount = 0;
+        let logsDebounceTimer = null;
 
         // 隐私模式状态管理
         let privacyModeEnabled = true;
@@ -2082,6 +2281,102 @@
             document.querySelectorAll('.tab').forEach(tabEl => tabEl.classList.toggle('active', tabEl.dataset.tab === tab));
             document.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden'));
             document.getElementById('tab' + tab.charAt(0).toUpperCase() + tab.slice(1)).classList.remove('hidden');
+            if (tab === 'logs') loadLogs();
+        }
+
+        function isLogsTabActive() {
+            const tab = document.getElementById('tabLogs');
+            return tab && !tab.classList.contains('hidden');
+        }
+
+        async function loadLogs(silent) {
+            const list = document.getElementById('logsList');
+            if (!list) return;
+            const level = document.getElementById('logsLevelFilter')?.value || 'all';
+            const limit = document.getElementById('logsLimit')?.value || '100';
+            const keyword = document.getElementById('logsSearch')?.value.trim() || '';
+            const params = new URLSearchParams({ limit });
+            if (level && level !== 'all') params.set('level', level);
+            if (keyword) params.set('q', keyword);
+
+            try {
+                const res = await fetch('/admin/api/logs?' + params.toString(), { headers: { 'X-Admin-Password': password } });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const d = await res.json();
+                logsData = Array.isArray(d.logs) ? d.logs : [];
+                logsTotalCount = d.total || logsData.length;
+                document.getElementById('logsLastUpdate').textContent = t('logs.lastUpdate', new Date().toLocaleTimeString());
+                renderLogs();
+            } catch (e) {
+                if (!silent) {
+                    list.innerHTML = '<div class="log-empty" style="color:#dc2626">' + t('logs.loadFailed') + '</div>';
+                }
+            }
+        }
+
+        function renderLogs() {
+            const list = document.getElementById('logsList');
+            if (!list) return;
+            const warnCount = logsData.filter(item => item.level === 'warn').length;
+            const errorCount = logsData.filter(item => item.level === 'error').length;
+            const notFoundCount = logsData.filter(item => Number(item.status) === 404).length;
+            document.getElementById('logsTotal').textContent = t('logs.total', logsTotalCount, logsData.length);
+            document.getElementById('logsWarnCount').textContent = t('logs.warnCount', warnCount);
+            document.getElementById('logsErrorCount').textContent = t('logs.errorCount', errorCount);
+            document.getElementById('logs404Count').textContent = t('logs.notFoundCount', notFoundCount);
+
+            if (logsData.length === 0) {
+                list.innerHTML = '<div class="log-empty">' + t('logs.empty') + '</div>';
+                return;
+            }
+
+            list.innerHTML = logsData.map(entry => {
+                const level = entry.level || 'info';
+                const path = entry.canonicalPath ? entry.path + ' -> ' + entry.canonicalPath : entry.path;
+                const message = entry.message || (entry.method + ' ' + entry.path + ' -> ' + entry.status);
+                const meta = [
+                    '#' + entry.id,
+                    formatLogTime(entry.time),
+                    (entry.durationMs || 0) + 'ms',
+                    entry.clientIp || '',
+                    entry.userAgent || ''
+                ].filter(Boolean).map(escapeHtml).join(' · ');
+                return '<div class="log-row ' + escapeHtml(level) + '">' +
+                    '<div class="log-head">' +
+                    '<span class="log-badge ' + escapeHtml(level) + '">' + escapeHtml(level) + '</span>' +
+                    '<span class="log-status">' + escapeHtml(String(entry.status || '-')) + '</span>' +
+                    '<span class="log-status">' + escapeHtml(entry.method || '-') + '</span>' +
+                    '<span class="log-message">' + escapeHtml(path || '-') + '</span>' +
+                    '</div>' +
+                    '<div class="log-message">' + escapeHtml(message) + '</div>' +
+                    '<div class="log-meta">' + meta + '</div>' +
+                    '</div>';
+            }).join('');
+        }
+
+        function debouncedLoadLogs() {
+            if (logsDebounceTimer) clearTimeout(logsDebounceTimer);
+            logsDebounceTimer = setTimeout(() => loadLogs(), 250);
+        }
+
+        function toggleLogsAutoRefresh() {
+            if (document.getElementById('logsAutoRefresh')?.checked) loadLogs(true);
+        }
+
+        async function clearLogs() {
+            if (!confirm(t('logs.confirmClear'))) return;
+            await fetch('/admin/api/logs', { method: 'DELETE', headers: { 'X-Admin-Password': password } });
+            logsData = [];
+            logsTotalCount = 0;
+            document.getElementById('logsLastUpdate').textContent = '-';
+            renderLogs();
+        }
+
+        function formatLogTime(value) {
+            if (!value) return '-';
+            const date = new Date(value);
+            if (Number.isNaN(date.getTime())) return value;
+            return date.toLocaleString();
         }
         async function toggleAccount(id, enabled) {
             await fetch('/admin/api/accounts/' + id, {
@@ -2380,6 +2675,9 @@
             }
         }
         setInterval(() => { if (!document.getElementById('mainPage').classList.contains('hidden')) loadStats(); }, 10000);
+        setInterval(() => {
+            if (isLogsTabActive() && document.getElementById('logsAutoRefresh')?.checked) loadLogs(true);
+        }, 5000);
 
         // ==================== 版本检查 ====================
         let currentVersion = '';

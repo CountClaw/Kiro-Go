@@ -8,6 +8,7 @@ import (
 	"kiro-go/config"
 	"kiro-go/pool"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -34,6 +35,73 @@ type Handler struct {
 	modelsCacheMu   sync.RWMutex
 	modelsCacheTime int64
 	promptCache     *promptCacheTracker
+	logMu           sync.RWMutex
+	requestLogs     []RequestLogEntry
+	logSeq          int64
+}
+
+const (
+	defaultRequestLogLimit = 500
+	requestLogBodyLimit    = 2048
+)
+
+type RequestLogEntry struct {
+	ID            int64  `json:"id"`
+	Time          string `json:"time"`
+	Level         string `json:"level"`
+	Method        string `json:"method"`
+	Path          string `json:"path"`
+	CanonicalPath string `json:"canonicalPath,omitempty"`
+	Status        int    `json:"status"`
+	DurationMs    int64  `json:"durationMs"`
+	ClientIP      string `json:"clientIp,omitempty"`
+	UserAgent     string `json:"userAgent,omitempty"`
+	Message       string `json:"message"`
+}
+
+type loggingResponseWriter struct {
+	http.ResponseWriter
+	status      int
+	wroteHeader bool
+	body        strings.Builder
+}
+
+func (w *loggingResponseWriter) WriteHeader(status int) {
+	if w.wroteHeader {
+		return
+	}
+	w.status = status
+	w.wroteHeader = true
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *loggingResponseWriter) Write(data []byte) (int, error) {
+	if !w.wroteHeader {
+		w.status = http.StatusOK
+		w.wroteHeader = true
+	}
+	if w.body.Len() < requestLogBodyLimit {
+		remaining := requestLogBodyLimit - w.body.Len()
+		capture := data
+		if len(capture) > remaining {
+			capture = capture[:remaining]
+		}
+		w.body.Write(capture)
+	}
+	return w.ResponseWriter.Write(data)
+}
+
+func (w *loggingResponseWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w *loggingResponseWriter) Status() int {
+	if w.status == 0 {
+		return http.StatusOK
+	}
+	return w.status
 }
 
 type thinkingStreamSource int
@@ -240,7 +308,16 @@ func (h *Handler) validateApiKey(r *http.Request) bool {
 
 // ServeHTTP 路由分发
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Path
+	originalPath := r.URL.Path
+	path := canonicalAPIPath(originalPath)
+	start := time.Now()
+	logWriter := &loggingResponseWriter{ResponseWriter: w}
+	if shouldRecordRequestLog(originalPath) {
+		defer func() {
+			h.recordRequestLog(r, originalPath, path, logWriter.Status(), time.Since(start), logWriter.body.String())
+		}()
+		w = logWriter
+	}
 
 	// CORS - 完整的头部支持
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -288,6 +365,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleOpenAIResponses(w, r)
 	case path == "/v1/models" || path == "/models":
 		h.handleModels(w, r)
+	case strings.HasPrefix(path, "/v1/models/") || strings.HasPrefix(path, "/models/"):
+		h.handleModelRetrieve(w, r)
 	case path == "/api/event_logging/batch":
 		// Claude Code 遥测端点 - 直接返回 200 OK
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -318,6 +397,57 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "Not Found", 404)
 	}
+}
+
+func shouldRecordRequestLog(path string) bool {
+	if path == "/" || path == "/health" || strings.HasPrefix(path, "/admin/api/logs") {
+		return false
+	}
+	if strings.HasPrefix(path, "/admin/") {
+		return strings.HasPrefix(path, "/admin/api/")
+	}
+	return true
+}
+
+func canonicalAPIPath(path string) string {
+	if path == "" || path == "/" || strings.HasPrefix(path, "/admin") || strings.HasPrefix(path, "/api/") {
+		return path
+	}
+
+	for strings.Contains(path, "/v1/v1/") {
+		path = strings.ReplaceAll(path, "/v1/v1/", "/v1/")
+	}
+
+	switch {
+	case strings.HasSuffix(path, "/v1/messages/count_tokens") || strings.HasSuffix(path, "/messages/count_tokens"):
+		return "/v1/messages/count_tokens"
+	case strings.HasSuffix(path, "/anthropic/v1/messages"):
+		return "/anthropic/v1/messages"
+	case strings.HasSuffix(path, "/v1/messages") || strings.HasSuffix(path, "/messages"):
+		return "/v1/messages"
+	case strings.HasSuffix(path, "/v1/chat/completions") || strings.HasSuffix(path, "/chat/completions"):
+		return "/v1/chat/completions"
+	case strings.HasSuffix(path, "/v1/completions") || strings.HasSuffix(path, "/completions"):
+		return "/v1/completions"
+	case strings.HasSuffix(path, "/v1/responses") || strings.HasSuffix(path, "/responses"):
+		return "/v1/responses"
+	case strings.HasSuffix(path, "/v1/models") || strings.HasSuffix(path, "/models"):
+		return "/v1/models"
+	default:
+		if modelID := extractModelPathID(path); modelID != "" {
+			return "/v1/models/" + modelID
+		}
+		return path
+	}
+}
+
+func extractModelPathID(path string) string {
+	for _, marker := range []string{"/v1/models/", "/models/"} {
+		if idx := strings.LastIndex(path, marker); idx >= 0 {
+			return strings.TrimSpace(path[idx+len(marker):])
+		}
+	}
+	return ""
 }
 
 // handleHealth 健康检查（不暴露统计数据）
@@ -380,6 +510,27 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
 		"data":   models,
 	})
 	return
+}
+
+// handleModelRetrieve OpenAI 模型查询，兼容 GET /v1/models/{model}
+func (h *Handler) handleModelRetrieve(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	modelID := extractModelPathID(canonicalAPIPath(r.URL.Path))
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		h.sendOpenAIError(w, 404, "invalid_request_error", "Model not found")
+		return
+	}
+
+	supportsImage := strings.Contains(strings.ToLower(modelID), "claude") ||
+		strings.Contains(strings.ToLower(modelID), "gpt-4") ||
+		strings.Contains(strings.ToLower(modelID), "gpt-5")
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(buildModelInfo(modelID, "kiro-proxy", supportsImage))
 }
 
 func buildAnthropicModelsResponse(cached []ModelInfo, thinkingSuffix string) []map[string]interface{} {
@@ -1106,6 +1257,164 @@ func (h *Handler) recordSuccess(inputTokens, outputTokens int, credits float64) 
 func (h *Handler) recordFailure() {
 	atomic.AddInt64(&h.totalRequests, 1)
 	atomic.AddInt64(&h.failedRequests, 1)
+}
+
+func (h *Handler) recordRequestLog(r *http.Request, originalPath, canonicalPath string, status int, duration time.Duration, responseBody string) {
+	level := "info"
+	if status >= 500 {
+		level = "error"
+	} else if status >= 400 {
+		level = "warn"
+	}
+
+	message := fmt.Sprintf("%s %s -> %d", r.Method, originalPath, status)
+	if canonicalPath != originalPath {
+		message = fmt.Sprintf("%s %s -> %d (normalized to %s)", r.Method, originalPath, status, canonicalPath)
+	}
+	if status >= 400 {
+		if errMsg := extractLogErrorMessage(responseBody); errMsg != "" {
+			message += ": " + errMsg
+		}
+	}
+
+	entry := RequestLogEntry{
+		ID:            atomic.AddInt64(&h.logSeq, 1),
+		Time:          time.Now().Format(time.RFC3339),
+		Level:         level,
+		Method:        r.Method,
+		Path:          originalPath,
+		CanonicalPath: canonicalLogPath(originalPath, canonicalPath),
+		Status:        status,
+		DurationMs:    duration.Milliseconds(),
+		ClientIP:      extractClientIP(r),
+		UserAgent:     r.UserAgent(),
+		Message:       message,
+	}
+
+	h.logMu.Lock()
+	defer h.logMu.Unlock()
+	h.requestLogs = append(h.requestLogs, entry)
+	if len(h.requestLogs) > defaultRequestLogLimit {
+		copy(h.requestLogs, h.requestLogs[len(h.requestLogs)-defaultRequestLogLimit:])
+		h.requestLogs = h.requestLogs[:defaultRequestLogLimit]
+	}
+}
+
+func canonicalLogPath(originalPath, canonicalPath string) string {
+	if canonicalPath == "" || canonicalPath == originalPath {
+		return ""
+	}
+	return canonicalPath
+}
+
+func extractLogErrorMessage(body string) string {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return ""
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(body), &payload); err == nil {
+		if msg := findErrorMessage(payload); msg != "" {
+			return msg
+		}
+	}
+
+	body = strings.Join(strings.Fields(body), " ")
+	if len(body) > 300 {
+		return body[:300] + "..."
+	}
+	return body
+}
+
+func findErrorMessage(value interface{}) string {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		if msg, ok := v["message"].(string); ok && strings.TrimSpace(msg) != "" {
+			return strings.TrimSpace(msg)
+		}
+		if msg, ok := v["error"].(string); ok && strings.TrimSpace(msg) != "" {
+			return strings.TrimSpace(msg)
+		}
+		if nested, ok := v["error"]; ok {
+			if msg := findErrorMessage(nested); msg != "" {
+				return msg
+			}
+		}
+		for _, nested := range v {
+			if msg := findErrorMessage(nested); msg != "" {
+				return msg
+			}
+		}
+	case []interface{}:
+		for _, nested := range v {
+			if msg := findErrorMessage(nested); msg != "" {
+				return msg
+			}
+		}
+	}
+	return ""
+}
+
+func extractClientIP(r *http.Request) string {
+	for _, header := range []string{"X-Forwarded-For", "X-Real-IP"} {
+		value := strings.TrimSpace(r.Header.Get(header))
+		if value == "" {
+			continue
+		}
+		parts := strings.Split(value, ",")
+		if first := strings.TrimSpace(parts[0]); first != "" {
+			return first
+		}
+	}
+	host := r.RemoteAddr
+	if idx := strings.LastIndex(host, ":"); idx > -1 {
+		return host[:idx]
+	}
+	return host
+}
+
+func (h *Handler) queryRequestLogs(limit int, level, keyword string) ([]RequestLogEntry, int) {
+	if limit <= 0 || limit > defaultRequestLogLimit {
+		limit = 100
+	}
+	level = strings.ToLower(strings.TrimSpace(level))
+	keyword = strings.ToLower(strings.TrimSpace(keyword))
+
+	h.logMu.RLock()
+	defer h.logMu.RUnlock()
+
+	filtered := make([]RequestLogEntry, 0, len(h.requestLogs))
+	for i := len(h.requestLogs) - 1; i >= 0; i-- {
+		entry := h.requestLogs[i]
+		if level != "" && level != "all" && entry.Level != level {
+			continue
+		}
+		if keyword != "" {
+			haystack := strings.ToLower(strings.Join([]string{
+				entry.Method,
+				entry.Path,
+				entry.CanonicalPath,
+				entry.Message,
+				entry.UserAgent,
+				strconv.Itoa(entry.Status),
+			}, " "))
+			if !strings.Contains(haystack, keyword) {
+				continue
+			}
+		}
+		filtered = append(filtered, entry)
+		if len(filtered) >= limit {
+			break
+		}
+	}
+	return filtered, len(h.requestLogs)
+}
+
+func (h *Handler) clearRequestLogs() {
+	h.logMu.Lock()
+	h.requestLogs = nil
+	h.logMu.Unlock()
 }
 
 // handleClaudeNonStream Claude 非流式响应
@@ -2232,6 +2541,12 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		h.apiGetStats(w, r)
 	case path == "/stats/reset" && r.Method == "POST":
 		h.apiResetStats(w, r)
+	case path == "/logs" && r.Method == "GET":
+		h.apiGetLogs(w, r)
+	case path == "/logs" && r.Method == "DELETE":
+		h.apiClearLogs(w, r)
+	case path == "/logs/clear" && r.Method == "POST":
+		h.apiClearLogs(w, r)
 	case path == "/generate-machine-id" && r.Method == "GET":
 		h.apiGenerateMachineId(w, r)
 	case path == "/thinking" && r.Method == "GET":
@@ -2923,6 +3238,26 @@ func (h *Handler) apiResetStats(w http.ResponseWriter, r *http.Request) {
 	h.totalCredits = 0
 	h.creditsMu.Unlock()
 	config.UpdateStats(0, 0, 0, 0, 0)
+	json.NewEncoder(w).Encode(map[string]bool{"success": true})
+}
+
+func (h *Handler) apiGetLogs(w http.ResponseWriter, r *http.Request) {
+	limit := 100
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil {
+			limit = parsed
+		}
+	}
+	logs, total := h.queryRequestLogs(limit, r.URL.Query().Get("level"), r.URL.Query().Get("q"))
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"total":   total,
+		"logs":    logs,
+	})
+}
+
+func (h *Handler) apiClearLogs(w http.ResponseWriter, r *http.Request) {
+	h.clearRequestLogs()
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }
 
