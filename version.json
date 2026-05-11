@@ -1,5 +1,5 @@
 {
-  "version": "1.0.4",
-  "changelog": "✨ Added and fixed several improvements across the project.\n🛠️ 新增并修复了一些内容，包含若干功能改进与问题修复。",
-  "download": "https://github.com/Quorinex/Kiro-Go"
+  "version": "1.0.5",
+  "changelog": "## 1.0.5\n\n- 新增请求日志面板：可查看状态码、路径归一化、耗时、客户端信息和错误摘要，支持筛选、搜索、自动刷新和清空。\n- 修复 cc-switch 测试模型时的 404：兼容 GET /v1/models/{model}，并容错 Base URL 与 API 路径重复拼接。\n- 增强 OpenAI API 兼容：补充 Chat Completions、Completions、Responses 和模型列表相关适配。\n- 新增 Pro 账号达到限额后的使用限制开关，便于控制账号分配策略。",
+  "download": "https://github.com/CountClaw/Kiro-Go"
 }
