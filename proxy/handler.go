@@ -107,7 +107,7 @@ func validateOpenAIRequestShape(req *OpenAIRequest) string {
 		if role == "" {
 			continue
 		}
-		if role != "system" {
+		if !isOpenAIInstructionRole(role) {
 			hasNonSystem = true
 			lastRole = role
 		}
@@ -245,7 +245,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// CORS - 完整的头部支持
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Api-Key, anthropic-version, anthropic-beta, x-api-key, x-stainless-os, x-stainless-lang, x-stainless-package-version, x-stainless-runtime, x-stainless-runtime-version, x-stainless-arch")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Api-Key, OpenAI-Organization, OpenAI-Project, OpenAI-Beta, Idempotency-Key, anthropic-version, anthropic-beta, x-api-key, x-stainless-os, x-stainless-lang, x-stainless-package-version, x-stainless-runtime, x-stainless-runtime-version, x-stainless-arch")
 	w.Header().Set("Access-Control-Expose-Headers", "x-request-id, x-ratelimit-limit-requests, x-ratelimit-limit-tokens, x-ratelimit-remaining-requests, x-ratelimit-remaining-tokens, x-ratelimit-reset-requests, x-ratelimit-reset-tokens")
 
 	if r.Method == "OPTIONS" {
@@ -274,6 +274,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.handleOpenAIChat(w, r)
+	case path == "/v1/completions" || path == "/completions":
+		if !h.validateApiKey(r) {
+			h.sendOpenAIError(w, 401, "authentication_error", "Invalid or missing API key")
+			return
+		}
+		h.handleOpenAICompletions(w, r)
+	case path == "/v1/responses" || path == "/responses":
+		if !h.validateApiKey(r) {
+			h.sendOpenAIError(w, 401, "authentication_error", "Invalid or missing API key")
+			return
+		}
+		h.handleOpenAIResponses(w, r)
 	case path == "/v1/models" || path == "/models":
 		h.handleModels(w, r)
 	case path == "/api/event_logging/batch":
@@ -1242,6 +1254,104 @@ func (h *Handler) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleOpenAICompletions OpenAI legacy Completions API 处理
+func (h *Handler) handleOpenAICompletions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method Not Allowed", 405)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		h.sendOpenAIError(w, 400, "invalid_request_error", "Failed to read request body")
+		return
+	}
+
+	var completionReq OpenAICompletionsRequest
+	if err := json.Unmarshal(body, &completionReq); err != nil {
+		h.sendOpenAIError(w, 400, "invalid_request_error", "Invalid JSON")
+		return
+	}
+
+	openAIReq := CompletionsToOpenAIRequest(&completionReq)
+	if msg := validateOpenAIRequestShape(openAIReq); msg != "" {
+		h.sendOpenAIError(w, 400, "invalid_request_error", msg)
+		return
+	}
+
+	account := h.pool.GetNext()
+	if account == nil {
+		h.sendOpenAIError(w, 503, "server_error", "No available accounts")
+		return
+	}
+
+	if err := h.ensureValidToken(account); err != nil {
+		h.sendOpenAIError(w, 503, "server_error", "Token refresh failed")
+		return
+	}
+
+	thinkingCfg := config.GetThinkingConfig()
+	actualModel, thinking := ParseModelAndThinking(openAIReq.Model, thinkingCfg.Suffix)
+	openAIReq.Model = actualModel
+	estimatedInputTokens := estimateOpenAIRequestInputTokens(openAIReq)
+	kiroPayload := OpenAIToKiro(openAIReq, thinking)
+
+	if completionReq.Stream {
+		h.handleOpenAICompletionsStream(w, account, kiroPayload, openAIReq.Model, thinking, estimatedInputTokens)
+	} else {
+		h.handleOpenAICompletionsNonStream(w, account, kiroPayload, openAIReq.Model, thinking, estimatedInputTokens)
+	}
+}
+
+// handleOpenAIResponses OpenAI Responses API 处理
+func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method Not Allowed", 405)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		h.sendOpenAIError(w, 400, "invalid_request_error", "Failed to read request body")
+		return
+	}
+
+	var respReq OpenAIResponsesRequest
+	if err := json.Unmarshal(body, &respReq); err != nil {
+		h.sendOpenAIError(w, 400, "invalid_request_error", "Invalid JSON")
+		return
+	}
+
+	openAIReq := ResponsesToOpenAIRequest(&respReq)
+	if msg := validateOpenAIRequestShape(openAIReq); msg != "" {
+		h.sendOpenAIError(w, 400, "invalid_request_error", msg)
+		return
+	}
+
+	account := h.pool.GetNext()
+	if account == nil {
+		h.sendOpenAIError(w, 503, "server_error", "No available accounts")
+		return
+	}
+
+	if err := h.ensureValidToken(account); err != nil {
+		h.sendOpenAIError(w, 503, "server_error", "Token refresh failed")
+		return
+	}
+
+	thinkingCfg := config.GetThinkingConfig()
+	actualModel, thinking := ParseModelAndThinking(openAIReq.Model, thinkingCfg.Suffix)
+	openAIReq.Model = actualModel
+	estimatedInputTokens := estimateOpenAIRequestInputTokens(openAIReq)
+	kiroPayload := OpenAIToKiro(openAIReq, thinking)
+
+	if respReq.Stream {
+		h.handleOpenAIResponsesStream(w, account, kiroPayload, openAIReq.Model, thinking, estimatedInputTokens)
+	} else {
+		h.handleOpenAIResponsesNonStream(w, account, kiroPayload, openAIReq.Model, thinking, estimatedInputTokens)
+	}
+}
+
 // handleOpenAIStream OpenAI 流式响应
 func (h *Handler) handleOpenAIStream(w http.ResponseWriter, account *config.Account, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int) {
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
@@ -1619,6 +1729,264 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, account *config.Acco
 	flusher.Flush()
 }
 
+// handleOpenAICompletionsStream OpenAI legacy Completions API 流式响应
+func (h *Handler) handleOpenAICompletionsStream(w http.ResponseWriter, account *config.Account, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int) {
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		h.sendOpenAIError(w, 500, "server_error", "Streaming not supported")
+		return
+	}
+
+	completionID := "cmpl-" + uuid.New().String()
+	var contentBuilder strings.Builder
+	var inputTokens, outputTokens int
+	var credits float64
+
+	sendChunk := func(text string, finishReason interface{}) {
+		chunk := map[string]interface{}{
+			"id":      completionID,
+			"object":  "text_completion",
+			"created": time.Now().Unix(),
+			"model":   model,
+			"choices": []map[string]interface{}{{
+				"text":          text,
+				"index":         0,
+				"logprobs":      nil,
+				"finish_reason": finishReason,
+			}},
+		}
+		data, _ := json.Marshal(chunk)
+		fmt.Fprintf(w, "data: %s\n\n", string(data))
+		flusher.Flush()
+	}
+
+	callback := &KiroStreamCallback{
+		OnText: func(text string, isThinking bool) {
+			if text == "" || isThinking {
+				return
+			}
+			contentBuilder.WriteString(text)
+			sendChunk(text, nil)
+		},
+		OnComplete: func(inTok, outTok int) {
+			inputTokens = inTok
+			outputTokens = outTok
+		},
+		OnError: func(err error) {
+			h.pool.RecordError(account.ID, strings.Contains(err.Error(), "429"))
+		},
+		OnCredits: func(c float64) {
+			credits = c
+		},
+	}
+
+	err := CallKiroAPI(account, payload, callback)
+	if err != nil {
+		h.recordFailure()
+		h.pool.RecordError(account.ID, strings.Contains(err.Error(), "429"))
+		return
+	}
+
+	finalContent, _ := extractThinkingFromContent(contentBuilder.String())
+	if inputTokens <= 0 {
+		inputTokens = estimatedInputTokens
+	}
+	outputTokens = estimateApproxTokens(finalContent)
+
+	h.recordSuccess(inputTokens, outputTokens, credits)
+	h.pool.RecordSuccess(account.ID)
+	h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
+
+	sendChunk("", "stop")
+	fmt.Fprintf(w, "data: [DONE]\n\n")
+	flusher.Flush()
+}
+
+func sendResponsesSSE(w http.ResponseWriter, flusher http.Flusher, event string, payload map[string]interface{}) {
+	if payload == nil {
+		payload = map[string]interface{}{}
+	}
+	if _, ok := payload["type"]; !ok {
+		payload["type"] = event
+	}
+	data, _ := json.Marshal(payload)
+	fmt.Fprintf(w, "event: %s\n", event)
+	fmt.Fprintf(w, "data: %s\n\n", string(data))
+	flusher.Flush()
+}
+
+// handleOpenAIResponsesStream OpenAI Responses API 流式响应
+func (h *Handler) handleOpenAIResponsesStream(w http.ResponseWriter, account *config.Account, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int) {
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		h.sendOpenAIError(w, 500, "server_error", "Streaming not supported")
+		return
+	}
+
+	responseID := "resp_" + uuid.New().String()
+	messageID := "msg_" + uuid.New().String()
+	var contentBuilder strings.Builder
+	var reasoningBuilder strings.Builder
+	var toolUses []KiroToolUse
+	var inputTokens, outputTokens int
+	var credits float64
+
+	sendResponsesSSE(w, flusher, "response.created", map[string]interface{}{
+		"response": map[string]interface{}{
+			"id":         responseID,
+			"object":     "response",
+			"created_at": time.Now().Unix(),
+			"status":     "in_progress",
+			"model":      model,
+			"output":     []interface{}{},
+		},
+	})
+	sendResponsesSSE(w, flusher, "response.output_item.added", map[string]interface{}{
+		"output_index": 0,
+		"item": map[string]interface{}{
+			"id":      messageID,
+			"type":    "message",
+			"status":  "in_progress",
+			"role":    "assistant",
+			"content": []interface{}{},
+		},
+	})
+	sendResponsesSSE(w, flusher, "response.content_part.added", map[string]interface{}{
+		"item_id":       messageID,
+		"output_index":  0,
+		"content_index": 0,
+		"part": map[string]interface{}{
+			"type":        "output_text",
+			"text":        "",
+			"annotations": []interface{}{},
+		},
+	})
+
+	callback := &KiroStreamCallback{
+		OnText: func(text string, isThinking bool) {
+			if text == "" {
+				return
+			}
+			if isThinking {
+				if thinking {
+					reasoningBuilder.WriteString(text)
+				}
+				return
+			}
+			contentBuilder.WriteString(text)
+			sendResponsesSSE(w, flusher, "response.output_text.delta", map[string]interface{}{
+				"response_id":   responseID,
+				"item_id":       messageID,
+				"output_index":  0,
+				"content_index": 0,
+				"delta":         text,
+			})
+		},
+		OnToolUse: func(tu KiroToolUse) {
+			toolUses = append(toolUses, tu)
+			args, _ := json.Marshal(tu.Input)
+			sendResponsesSSE(w, flusher, "response.output_item.done", map[string]interface{}{
+				"output_index": len(toolUses),
+				"item": map[string]interface{}{
+					"type":      "function_call",
+					"id":        "fc_" + uuid.New().String(),
+					"call_id":   tu.ToolUseID,
+					"name":      tu.Name,
+					"arguments": string(args),
+					"status":    "completed",
+				},
+			})
+		},
+		OnComplete: func(inTok, outTok int) {
+			inputTokens = inTok
+			outputTokens = outTok
+		},
+		OnError: func(err error) {
+			h.pool.RecordError(account.ID, strings.Contains(err.Error(), "429"))
+		},
+		OnCredits: func(c float64) {
+			credits = c
+		},
+	}
+
+	err := CallKiroAPI(account, payload, callback)
+	if err != nil {
+		h.recordFailure()
+		h.pool.RecordError(account.ID, strings.Contains(err.Error(), "429"))
+		sendResponsesSSE(w, flusher, "response.failed", map[string]interface{}{
+			"response": map[string]interface{}{
+				"id":     responseID,
+				"status": "failed",
+				"error": map[string]string{
+					"type":    "server_error",
+					"message": err.Error(),
+				},
+			},
+		})
+		return
+	}
+
+	finalContent, extractedReasoning := extractThinkingFromContent(contentBuilder.String())
+	reasoningContent := reasoningBuilder.String()
+	if thinking && reasoningContent == "" && extractedReasoning != "" {
+		reasoningContent = extractedReasoning
+	} else if !thinking {
+		reasoningContent = ""
+	}
+
+	if inputTokens <= 0 {
+		inputTokens = estimatedInputTokens
+	}
+	outputTokens = estimateOpenAIOutputTokens(finalContent, reasoningContent, toolUses)
+
+	h.recordSuccess(inputTokens, outputTokens, credits)
+	h.pool.RecordSuccess(account.ID)
+	h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
+
+	sendResponsesSSE(w, flusher, "response.output_text.done", map[string]interface{}{
+		"response_id":   responseID,
+		"item_id":       messageID,
+		"output_index":  0,
+		"content_index": 0,
+		"text":          finalContent,
+	})
+	sendResponsesSSE(w, flusher, "response.content_part.done", map[string]interface{}{
+		"item_id":       messageID,
+		"output_index":  0,
+		"content_index": 0,
+		"part": map[string]interface{}{
+			"type":        "output_text",
+			"text":        finalContent,
+			"annotations": []interface{}{},
+		},
+	})
+	sendResponsesSSE(w, flusher, "response.output_item.done", map[string]interface{}{
+		"output_index": 0,
+		"item": map[string]interface{}{
+			"id":     messageID,
+			"type":   "message",
+			"status": "completed",
+			"role":   "assistant",
+			"content": []map[string]interface{}{{
+				"type":        "output_text",
+				"text":        finalContent,
+				"annotations": []interface{}{},
+			}},
+		},
+	})
+	sendResponsesSSE(w, flusher, "response.completed", map[string]interface{}{
+		"response": kiroToOpenAIResponsesResponseWithID(responseID, finalContent, reasoningContent, toolUses, inputTokens, outputTokens, model),
+	})
+}
+
 // handleOpenAINonStream OpenAI 非流式响应
 func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, account *config.Account, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int) {
 	var content string
@@ -1668,6 +2036,99 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, account *config.A
 
 	thinkingFormat := config.GetThinkingConfig().OpenAIFormat
 	resp := KiroToOpenAIResponseWithReasoning(finalContent, reasoningContent, toolUses, inputTokens, outputTokens, model, thinkingFormat)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// handleOpenAICompletionsNonStream OpenAI legacy Completions API 非流式响应
+func (h *Handler) handleOpenAICompletionsNonStream(w http.ResponseWriter, account *config.Account, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int) {
+	var content string
+	var inputTokens, outputTokens int
+	var credits float64
+
+	callback := &KiroStreamCallback{
+		OnText: func(text string, isThinking bool) {
+			if !isThinking {
+				content += text
+			}
+		},
+		OnComplete: func(inTok, outTok int) { inputTokens = inTok; outputTokens = outTok },
+		OnError:    func(err error) { h.pool.RecordError(account.ID, strings.Contains(err.Error(), "429")) },
+		OnCredits:  func(c float64) { credits = c },
+	}
+
+	err := CallKiroAPI(account, payload, callback)
+	if err != nil {
+		h.recordFailure()
+		h.pool.RecordError(account.ID, strings.Contains(err.Error(), "429"))
+		h.sendOpenAIError(w, 500, "server_error", err.Error())
+		return
+	}
+
+	finalContent, _ := extractThinkingFromContent(content)
+	if inputTokens <= 0 {
+		inputTokens = estimatedInputTokens
+	}
+	outputTokens = estimateApproxTokens(finalContent)
+
+	h.recordSuccess(inputTokens, outputTokens, credits)
+	h.pool.RecordSuccess(account.ID)
+	h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
+
+	resp := KiroToOpenAICompletionResponse(finalContent, inputTokens, outputTokens, model)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// handleOpenAIResponsesNonStream OpenAI Responses API 非流式响应
+func (h *Handler) handleOpenAIResponsesNonStream(w http.ResponseWriter, account *config.Account, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int) {
+	var content string
+	var reasoningContent string
+	var toolUses []KiroToolUse
+	var inputTokens, outputTokens int
+	var credits float64
+
+	callback := &KiroStreamCallback{
+		OnText: func(text string, isThinking bool) {
+			if isThinking {
+				if thinking {
+					reasoningContent += text
+				}
+			} else {
+				content += text
+			}
+		},
+		OnToolUse:  func(tu KiroToolUse) { toolUses = append(toolUses, tu) },
+		OnComplete: func(inTok, outTok int) { inputTokens = inTok; outputTokens = outTok },
+		OnError:    func(err error) { h.pool.RecordError(account.ID, strings.Contains(err.Error(), "429")) },
+		OnCredits:  func(c float64) { credits = c },
+	}
+
+	err := CallKiroAPI(account, payload, callback)
+	if err != nil {
+		h.recordFailure()
+		h.pool.RecordError(account.ID, strings.Contains(err.Error(), "429"))
+		h.sendOpenAIError(w, 500, "server_error", err.Error())
+		return
+	}
+
+	finalContent, extractedReasoning := extractThinkingFromContent(content)
+	if thinking && reasoningContent == "" && extractedReasoning != "" {
+		reasoningContent = extractedReasoning
+	} else if !thinking {
+		reasoningContent = ""
+	}
+
+	if inputTokens <= 0 {
+		inputTokens = estimatedInputTokens
+	}
+	outputTokens = estimateOpenAIOutputTokens(finalContent, reasoningContent, toolUses)
+
+	h.recordSuccess(inputTokens, outputTokens, credits)
+	h.pool.RecordSuccess(account.ID)
+	h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
+
+	resp := KiroToOpenAIResponsesResponse(finalContent, reasoningContent, toolUses, inputTokens, outputTokens, model)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	json.NewEncoder(w).Encode(resp)
 }

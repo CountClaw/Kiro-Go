@@ -143,6 +143,19 @@ curl http://localhost:8080/v1/chat/completions \
   }'
 ```
 
+#### OpenAI Responses API
+
+```bash
+curl http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer any" \
+  -d '{
+    "model": "gpt-4o",
+    "instructions": "Be concise.",
+    "input": "Hello!"
+  }'
+```
+
 ## Model Mapping
 
 | Request Model | Actual Model |
@@ -152,8 +165,7 @@ curl http://localhost:8080/v1/chat/completions \
 | `claude-haiku-4.5` | claude-haiku-4.5 |
 | `claude-opus-4.5` | claude-opus-4.5 |
 | `claude-opus-4.6` | claude-opus-4.6 |
-| `gpt-4o`, `gpt-4` | claude-sonnet-4-20250514 |
-| `gpt-3.5-turbo` | claude-sonnet-4-20250514 |
+| `gpt-4o`, `gpt-4`, `gpt-3.5-turbo` | claude-sonnet-4.5 |
 
 ## Thinking Mode
 
@@ -214,6 +226,8 @@ Configure thinking mode in the Admin Panel under **Settings > Thinking Mode Sett
 | `POST /v1/messages` | Claude Messages API |
 | `POST /v1/messages/count_tokens` | Token counting |
 | `POST /v1/chat/completions` | OpenAI Chat API |
+| `POST /v1/completions` | OpenAI legacy Completions API |
+| `POST /v1/responses` | OpenAI Responses API |
 | `GET /admin` | Admin panel |
 
 ## Project Structure

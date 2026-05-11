@@ -98,3 +98,45 @@ func TestAPIUpdateSettingsPreservesOmittedFields(t *testing.T) {
 		t.Fatalf("expected omitted Pro limit restriction to be preserved")
 	}
 }
+
+func TestServeHTTPResponsesEndpointRequiresAPIKey(t *testing.T) {
+	initSettingsTestConfig(t)
+	h := &Handler{}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-4o","input":"hello"}`))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 response, got %d", rec.Code)
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+	if _, ok := body["error"].(map[string]interface{}); !ok {
+		t.Fatalf("expected OpenAI-style error body, got %#v", body)
+	}
+}
+
+func TestServeHTTPCompletionsEndpointRequiresAPIKey(t *testing.T) {
+	initSettingsTestConfig(t)
+	h := &Handler{}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/completions", strings.NewReader(`{"model":"gpt-4o","prompt":"hello"}`))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 response, got %d", rec.Code)
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+	if _, ok := body["error"].(map[string]interface{}); !ok {
+		t.Fatalf("expected OpenAI-style error body, got %#v", body)
+	}
+}

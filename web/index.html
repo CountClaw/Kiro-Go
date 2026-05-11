@@ -1040,6 +1040,12 @@
                 <p style="margin:14px 0 10px;font-weight:500;font-size:14px">OpenAI API</p>
                 <div class="endpoint"><span id="openaiEndpoint"></span><button class="btn btn-sm btn-secondary"
                         onclick="copy('openaiEndpoint')" data-i18n="common.copy"></button></div>
+                <p style="margin:14px 0 10px;font-weight:500;font-size:14px">OpenAI Completions API</p>
+                <div class="endpoint"><span id="openaiCompletionsEndpoint"></span><button class="btn btn-sm btn-secondary"
+                        onclick="copy('openaiCompletionsEndpoint')" data-i18n="common.copy"></button></div>
+                <p style="margin:14px 0 10px;font-weight:500;font-size:14px">OpenAI Responses API</p>
+                <div class="endpoint"><span id="openaiResponsesEndpoint"></span><button class="btn btn-sm btn-secondary"
+                        onclick="copy('openaiResponsesEndpoint')" data-i18n="common.copy"></button></div>
                 <p style="margin:14px 0 10px;font-weight:500;font-size:14px" data-i18n="api.modelList"></p>
                 <div class="endpoint"><span id="modelsEndpoint"></span><button class="btn btn-sm btn-secondary"
                         onclick="copy('modelsEndpoint')" data-i18n="common.copy"></button></div>
@@ -1652,6 +1658,8 @@
             await Promise.all([loadStats(), loadAccounts(), loadSettings(), loadVersion()]);
             document.getElementById('claudeEndpoint').textContent = baseUrl + '/v1/messages';
             document.getElementById('openaiEndpoint').textContent = baseUrl + '/v1/chat/completions';
+            document.getElementById('openaiCompletionsEndpoint').textContent = baseUrl + '/v1/completions';
+            document.getElementById('openaiResponsesEndpoint').textContent = baseUrl + '/v1/responses';
             document.getElementById('modelsEndpoint').textContent = baseUrl + '/v1/models';
             document.getElementById('statsEndpoint').textContent = baseUrl + '/v1/stats';
             // 自动检查更新

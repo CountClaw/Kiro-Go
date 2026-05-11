@@ -507,13 +507,14 @@ func KiroToClaudeResponse(content, thinkingContent string, toolUses []KiroToolUs
 // ==================== OpenAI API 类型 ====================
 
 type OpenAIRequest struct {
-	Model       string          `json:"model"`
-	Messages    []OpenAIMessage `json:"messages"`
-	MaxTokens   int             `json:"max_tokens,omitempty"`
-	Temperature float64         `json:"temperature,omitempty"`
-	TopP        float64         `json:"top_p,omitempty"`
-	Stream      bool            `json:"stream,omitempty"`
-	Tools       []OpenAITool    `json:"tools,omitempty"`
+	Model               string          `json:"model"`
+	Messages            []OpenAIMessage `json:"messages"`
+	MaxTokens           int             `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int             `json:"max_completion_tokens,omitempty"`
+	Temperature         float64         `json:"temperature,omitempty"`
+	TopP                float64         `json:"top_p,omitempty"`
+	Stream              bool            `json:"stream,omitempty"`
+	Tools               []OpenAITool    `json:"tools,omitempty"`
 }
 
 type OpenAIMessage struct {
@@ -562,7 +563,35 @@ type OpenAIUsage struct {
 	TotalTokens      int `json:"total_tokens"`
 }
 
+type OpenAICompletionsRequest struct {
+	Model       string      `json:"model"`
+	Prompt      interface{} `json:"prompt"`
+	MaxTokens   int         `json:"max_tokens,omitempty"`
+	Temperature float64     `json:"temperature,omitempty"`
+	TopP        float64     `json:"top_p,omitempty"`
+	Stream      bool        `json:"stream,omitempty"`
+}
+
 // ==================== OpenAI -> Kiro 转换 ====================
+
+func isOpenAIInstructionRole(role string) bool {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "system", "developer":
+		return true
+	default:
+		return false
+	}
+}
+
+func (req *OpenAIRequest) effectiveMaxTokens() int {
+	if req == nil {
+		return 0
+	}
+	if req.MaxCompletionTokens > 0 {
+		return req.MaxCompletionTokens
+	}
+	return req.MaxTokens
+}
 
 func OpenAIToKiro(req *OpenAIRequest, thinking bool) *KiroPayload {
 	modelID := MapModel(req.Model)
@@ -573,7 +602,7 @@ func OpenAIToKiro(req *OpenAIRequest, thinking bool) *KiroPayload {
 	var nonSystemMessages []OpenAIMessage
 
 	for _, msg := range req.Messages {
-		if msg.Role == "system" {
+		if isOpenAIInstructionRole(msg.Role) {
 			if s := extractOpenAIMessageText(msg.Content); s != "" {
 				systemPrompt += s + "\n"
 			}
@@ -714,9 +743,10 @@ func OpenAIToKiro(req *OpenAIRequest, thinking bool) *KiroPayload {
 		payload.ConversationState.History = history
 	}
 
-	if req.MaxTokens > 0 || req.Temperature > 0 || req.TopP > 0 {
+	effectiveMaxTokens := req.effectiveMaxTokens()
+	if effectiveMaxTokens > 0 || req.Temperature > 0 || req.TopP > 0 {
 		payload.InferenceConfig = &InferenceConfig{
-			MaxTokens:   req.MaxTokens,
+			MaxTokens:   effectiveMaxTokens,
 			Temperature: req.Temperature,
 			TopP:        req.TopP,
 		}
@@ -1209,6 +1239,310 @@ func KiroToOpenAIResponseWithReasoning(content, reasoningContent string, toolUse
 			"prompt_tokens":     inputTokens,
 			"completion_tokens": outputTokens,
 			"total_tokens":      inputTokens + outputTokens,
+		},
+	}
+}
+
+// ==================== OpenAI Legacy Completions API 转换 ====================
+
+func CompletionsToOpenAIRequest(req *OpenAICompletionsRequest) *OpenAIRequest {
+	if req == nil {
+		return &OpenAIRequest{}
+	}
+	return &OpenAIRequest{
+		Model:       req.Model,
+		Messages:    []OpenAIMessage{{Role: "user", Content: completionPromptText(req.Prompt)}},
+		MaxTokens:   req.MaxTokens,
+		Temperature: req.Temperature,
+		TopP:        req.TopP,
+		Stream:      req.Stream,
+	}
+}
+
+func completionPromptText(prompt interface{}) string {
+	switch value := prompt.(type) {
+	case nil:
+		return ""
+	case string:
+		return value
+	case []interface{}:
+		parts := make([]string, 0, len(value))
+		for _, item := range value {
+			switch v := item.(type) {
+			case string:
+				parts = append(parts, v)
+			default:
+				if text := extractOpenAIMessageText(v); strings.TrimSpace(text) != "" {
+					parts = append(parts, text)
+				} else if raw, err := json.Marshal(v); err == nil {
+					parts = append(parts, string(raw))
+				}
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		if text := extractOpenAIMessageText(value); strings.TrimSpace(text) != "" {
+			return text
+		}
+		if raw, err := json.Marshal(value); err == nil {
+			return string(raw)
+		}
+		return ""
+	}
+}
+
+func KiroToOpenAICompletionResponse(content string, inputTokens, outputTokens int, model string) map[string]interface{} {
+	return map[string]interface{}{
+		"id":      "cmpl-" + uuid.New().String(),
+		"object":  "text_completion",
+		"created": time.Now().Unix(),
+		"model":   model,
+		"choices": []map[string]interface{}{{
+			"text":          content,
+			"index":         0,
+			"logprobs":      nil,
+			"finish_reason": "stop",
+		}},
+		"usage": map[string]int{
+			"prompt_tokens":     inputTokens,
+			"completion_tokens": outputTokens,
+			"total_tokens":      inputTokens + outputTokens,
+		},
+	}
+}
+
+// ==================== OpenAI Responses API 类型与转换 ====================
+
+type OpenAIResponsesRequest struct {
+	Model           string                `json:"model"`
+	Input           interface{}           `json:"input"`
+	Instructions    interface{}           `json:"instructions,omitempty"`
+	MaxOutputTokens int                   `json:"max_output_tokens,omitempty"`
+	Temperature     float64               `json:"temperature,omitempty"`
+	TopP            float64               `json:"top_p,omitempty"`
+	Stream          bool                  `json:"stream,omitempty"`
+	Tools           []OpenAIResponsesTool `json:"tools,omitempty"`
+}
+
+type OpenAIResponsesTool struct {
+	Type        string      `json:"type"`
+	Name        string      `json:"name,omitempty"`
+	Description string      `json:"description,omitempty"`
+	Parameters  interface{} `json:"parameters,omitempty"`
+	Function    struct {
+		Name        string      `json:"name"`
+		Description string      `json:"description"`
+		Parameters  interface{} `json:"parameters"`
+	} `json:"function,omitempty"`
+}
+
+func ResponsesToOpenAIRequest(req *OpenAIResponsesRequest) *OpenAIRequest {
+	if req == nil {
+		return &OpenAIRequest{}
+	}
+
+	messages := responseInputToOpenAIMessages(req.Input)
+	if instructions := extractOpenAIMessageText(req.Instructions); strings.TrimSpace(instructions) != "" {
+		messages = append([]OpenAIMessage{{
+			Role:    "developer",
+			Content: instructions,
+		}}, messages...)
+	}
+
+	return &OpenAIRequest{
+		Model:               req.Model,
+		Messages:            messages,
+		MaxCompletionTokens: req.MaxOutputTokens,
+		Temperature:         req.Temperature,
+		TopP:                req.TopP,
+		Stream:              req.Stream,
+		Tools:               responseToolsToOpenAITools(req.Tools),
+	}
+}
+
+func responseInputToOpenAIMessages(input interface{}) []OpenAIMessage {
+	switch value := input.(type) {
+	case nil:
+		return nil
+	case string:
+		return []OpenAIMessage{{Role: "user", Content: value}}
+	case []interface{}:
+		messages := make([]OpenAIMessage, 0, len(value))
+		for _, item := range value {
+			messages = append(messages, responseInputItemToOpenAIMessages(item)...)
+		}
+		return messages
+	case map[string]interface{}:
+		return responseInputItemToOpenAIMessages(value)
+	default:
+		return []OpenAIMessage{{Role: "user", Content: value}}
+	}
+}
+
+func responseInputItemToOpenAIMessages(item interface{}) []OpenAIMessage {
+	switch value := item.(type) {
+	case nil:
+		return nil
+	case string:
+		return []OpenAIMessage{{Role: "user", Content: value}}
+	case map[string]interface{}:
+		itemType, _ := value["type"].(string)
+		role, _ := value["role"].(string)
+
+		switch itemType {
+		case "function_call_output":
+			callID, _ := value["call_id"].(string)
+			if callID == "" {
+				callID, _ = value["tool_call_id"].(string)
+			}
+			return []OpenAIMessage{{
+				Role:       "tool",
+				ToolCallID: callID,
+				Content:    responseToolOutputContent(value["output"]),
+			}}
+		case "function_call":
+			callID, _ := value["call_id"].(string)
+			if callID == "" {
+				callID, _ = value["id"].(string)
+			}
+			name, _ := value["name"].(string)
+			arguments := responseFunctionArguments(value["arguments"])
+			tc := ToolCall{ID: callID, Type: "function"}
+			tc.Function.Name = name
+			tc.Function.Arguments = arguments
+			return []OpenAIMessage{{Role: "assistant", Content: nil, ToolCalls: []ToolCall{tc}}}
+		case "message":
+			if role == "" {
+				role = "user"
+			}
+			return []OpenAIMessage{{Role: role, Content: value["content"]}}
+		case "input_text", "input_image", "image_url", "text":
+			return []OpenAIMessage{{Role: "user", Content: []interface{}{value}}}
+		}
+
+		if role != "" {
+			return []OpenAIMessage{{Role: role, Content: value["content"]}}
+		}
+		return []OpenAIMessage{{Role: "user", Content: value}}
+	default:
+		return []OpenAIMessage{{Role: "user", Content: value}}
+	}
+}
+
+func responseToolOutputContent(output interface{}) interface{} {
+	switch value := output.(type) {
+	case nil:
+		return ""
+	case string:
+		return value
+	default:
+		if text := extractOpenAIMessageText(value); strings.TrimSpace(text) != "" {
+			return text
+		}
+		return value
+	}
+}
+
+func responseFunctionArguments(arguments interface{}) string {
+	switch value := arguments.(type) {
+	case nil:
+		return "{}"
+	case string:
+		if strings.TrimSpace(value) == "" {
+			return "{}"
+		}
+		return value
+	default:
+		data, err := json.Marshal(value)
+		if err != nil || len(data) == 0 {
+			return "{}"
+		}
+		return string(data)
+	}
+}
+
+func responseToolsToOpenAITools(tools []OpenAIResponsesTool) []OpenAITool {
+	if len(tools) == 0 {
+		return nil
+	}
+
+	result := make([]OpenAITool, 0, len(tools))
+	for _, tool := range tools {
+		if tool.Type != "function" {
+			continue
+		}
+
+		openAITool := OpenAITool{Type: "function"}
+		if tool.Function.Name != "" || tool.Function.Description != "" || tool.Function.Parameters != nil {
+			openAITool.Function.Name = tool.Function.Name
+			openAITool.Function.Description = tool.Function.Description
+			openAITool.Function.Parameters = tool.Function.Parameters
+		} else {
+			openAITool.Function.Name = tool.Name
+			openAITool.Function.Description = tool.Description
+			openAITool.Function.Parameters = tool.Parameters
+		}
+		result = append(result, openAITool)
+	}
+	return result
+}
+
+func KiroToOpenAIResponsesResponse(content, reasoningContent string, toolUses []KiroToolUse, inputTokens, outputTokens int, model string) map[string]interface{} {
+	return kiroToOpenAIResponsesResponseWithID("", content, reasoningContent, toolUses, inputTokens, outputTokens, model)
+}
+
+func kiroToOpenAIResponsesResponseWithID(responseID, content, reasoningContent string, toolUses []KiroToolUse, inputTokens, outputTokens int, model string) map[string]interface{} {
+	if responseID == "" {
+		responseID = "resp_" + uuid.New().String()
+	}
+	output := make([]map[string]interface{}, 0, 1+len(toolUses))
+
+	if content != "" {
+		output = append(output, map[string]interface{}{
+			"type":   "message",
+			"id":     "msg_" + uuid.New().String(),
+			"status": "completed",
+			"role":   "assistant",
+			"content": []map[string]interface{}{{
+				"type":        "output_text",
+				"text":        content,
+				"annotations": []interface{}{},
+			}},
+		})
+	}
+
+	for _, tu := range toolUses {
+		args, _ := json.Marshal(tu.Input)
+		output = append(output, map[string]interface{}{
+			"type":      "function_call",
+			"id":        "fc_" + uuid.New().String(),
+			"call_id":   tu.ToolUseID,
+			"name":      tu.Name,
+			"arguments": string(args),
+			"status":    "completed",
+		})
+	}
+
+	return map[string]interface{}{
+		"id":                  responseID,
+		"object":              "response",
+		"created_at":          time.Now().Unix(),
+		"status":              "completed",
+		"model":               model,
+		"output":              output,
+		"output_text":         content,
+		"reasoning_content":   reasoningContent,
+		"parallel_tool_calls": true,
+		"usage": map[string]interface{}{
+			"input_tokens":  inputTokens,
+			"output_tokens": outputTokens,
+			"total_tokens":  inputTokens + outputTokens,
+			"input_tokens_details": map[string]int{
+				"cached_tokens": 0,
+			},
+			"output_tokens_details": map[string]int{
+				"reasoning_tokens": estimateApproxTokens(reasoningContent),
+			},
 		},
 	}
 }

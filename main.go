@@ -10,6 +10,8 @@
 // The service exposes the following endpoints:
 //   - /v1/messages - Claude API compatible endpoint
 //   - /v1/chat/completions - OpenAI API compatible endpoint
+//   - /v1/completions - OpenAI legacy Completions API compatible endpoint
+//   - /v1/responses - OpenAI Responses API compatible endpoint
 //   - /admin - Web-based administration panel
 package main
 
@@ -58,6 +60,8 @@ func main() {
 	log.Printf("Admin panel: http://%s/admin", addr)
 	log.Printf("Claude API: http://%s/v1/messages", addr)
 	log.Printf("OpenAI API: http://%s/v1/chat/completions", addr)
+	log.Printf("OpenAI Completions API: http://%s/v1/completions", addr)
+	log.Printf("OpenAI Responses API: http://%s/v1/responses", addr)
 
 	if err := http.ListenAndServe(addr, handler); err != nil {
 		log.Fatalf("Server failed: %v", err)

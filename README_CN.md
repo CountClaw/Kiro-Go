@@ -143,6 +143,19 @@ curl http://localhost:8080/v1/chat/completions \
   }'
 ```
 
+#### OpenAI Responses API
+
+```bash
+curl http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer any" \
+  -d '{
+    "model": "gpt-4o",
+    "instructions": "保持简洁。",
+    "input": "你好！"
+  }'
+```
+
 ## 模型映射
 
 | 请求模型 | 实际模型 |
@@ -152,8 +165,7 @@ curl http://localhost:8080/v1/chat/completions \
 | `claude-haiku-4.5` | claude-haiku-4.5 |
 | `claude-opus-4.5` | claude-opus-4.5 |
 | `claude-opus-4.6` | claude-opus-4.6 |
-| `gpt-4o`, `gpt-4` | claude-sonnet-4-20250514 |
-| `gpt-3.5-turbo` | claude-sonnet-4-20250514 |
+| `gpt-4o`, `gpt-4`, `gpt-3.5-turbo` | claude-sonnet-4.5 |
 
 ## 思考模式
 
@@ -214,6 +226,8 @@ curl http://localhost:8080/v1/messages \
 | `POST /v1/messages` | Claude Messages API |
 | `POST /v1/messages/count_tokens` | Token 计数 |
 | `POST /v1/chat/completions` | OpenAI Chat API |
+| `POST /v1/completions` | OpenAI legacy Completions API |
+| `POST /v1/responses` | OpenAI Responses API |
 | `GET /admin` | 管理面板 |
 
 ## 项目结构
